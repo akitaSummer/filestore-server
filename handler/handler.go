@@ -8,9 +8,10 @@ import (
 	"net/http"
 	"os"
 
-	// "strconv"
+	"strconv"
 	"time"
 
+	dbplayer "filestore/db"
 	"filestore/meta"
 	"filestore/util"
 )
@@ -60,7 +61,16 @@ func UploadHandler(w http.ResponseWriter, r *http.Request) {
 
 		// meta.UpdateFileMeta(fileMeta)
 		_ = meta.UpdateFileMetaDB(fileMeta)
-		http.Redirect(w, r, "/file/upload/suc", http.StatusFound)
+
+		r.ParseForm()
+		username := r.Form.Get("username")
+		suc := dbplayer.OnUserFileUploadFinished(username, fileMeta.FileSha1, fileMeta.FileName, fileMeta.FileSize)
+		if suc {
+			http.Redirect(w, r, "/file/upload/suc", http.StatusFound)
+		} else {
+			w.Write([]byte("Upload Failed."))
+		}
+
 	}
 }
 
@@ -93,15 +103,25 @@ func GetFileMetaHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
+// 查询批量的文件元信息
 func FileQueryHandler(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 
-	// limitCnt, _ := strconv.Atoi(r.Form.Get("limit"))
-	limitCnt := r.Form.Get("limit")
+	limitCnt, _ := strconv.Atoi(r.Form.Get("limit"))
+	// limitCnt := r.Form.Get("limit")
 
-	fileMetas := meta.GetFileMeta(limitCnt)
+	// fileMetas := meta.GetFileMeta(limitCnt)
 
-	data, err := json.Marshal(fileMetas)
+	username := r.Form.Get("username")
+
+	userFiles, err := dbplayer.QueryUserFileMetas(username, limitCnt)
+
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	data, err := json.Marshal(userFiles)
 
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -181,4 +201,57 @@ func FileDeleteHandler(w http.ResponseWriter, r *http.Request) {
 
 	meta.RemoveFileMeta(fileSha1)
 	w.WriteHeader(http.StatusOK)
+}
+
+// 尝试秒传接口
+func TryFastUploadHandler(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+
+	// 1. 解析请求参数
+	username := r.Form.Get("username")
+	filehash := r.Form.Get("filehash")
+	filename := r.Form.Get("filename")
+	filesize, err := strconv.Atoi(r.Form.Get("filesize"))
+	if err != nil {
+		fmt.Println(err.Error())
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	// 2. 从文件表中查询相同hash的文件记录
+	fileMeta, err := meta.GetFileMetaDB(filehash)
+	if err != nil {
+		fmt.Println(err.Error())
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	// 3. 查不到记录则返回秒传失败
+	if fileMeta == (meta.FileMeta{}) {
+		resp := util.RespMsg{
+			Code: -1,
+			Msg:  "秒传失败，请访问普通上传接口",
+		}
+		w.Write(resp.JSONBytes())
+		return
+	}
+
+	// 4. 上传过则将文件信息写入用户文件表，返回成功
+	suc := dbplayer.OnUserFileUploadFinished(username, filehash, filename, int64(filesize))
+
+	if suc {
+		resp := util.RespMsg{
+			Code: 0,
+			Msg:  "秒传成功",
+		}
+		w.Write(resp.JSONBytes())
+		return
+	} else {
+		resp := util.RespMsg{
+			Code: -2,
+			Msg:  "秒传失败，请稍后重试",
+		}
+		w.Write(resp.JSONBytes())
+		return
+	}
 }
