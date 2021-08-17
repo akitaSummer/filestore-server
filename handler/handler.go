@@ -13,7 +13,10 @@ import (
 
 	dbplayer "filestore/db"
 	"filestore/meta"
+	"filestore/store/ceph"
 	"filestore/util"
+
+	"gopkg.in/amz.v1/s3"
 )
 
 func UploadHandler(w http.ResponseWriter, r *http.Request) {
@@ -58,6 +61,14 @@ func UploadHandler(w http.ResponseWriter, r *http.Request) {
 
 		newFile.Seek(0, 0)
 		fileMeta.FileSha1 = util.FileSha1(newFile)
+
+		// 同时写入ceph
+		newFile.Seek(0, 0)
+		data, _ := ioutil.ReadAll(newFile)
+		bucket := ceph.GetCephBucket("userfile")
+		cephPath := "/ceph/" + fileMeta.FileSha1
+		bucket.Put(cephPath, data, "octet-stream", s3.PublicRead)
+		fileMeta.Location = cephPath
 
 		// meta.UpdateFileMeta(fileMeta)
 		_ = meta.UpdateFileMetaDB(fileMeta)
